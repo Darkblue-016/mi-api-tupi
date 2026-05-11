@@ -1,21 +1,27 @@
 export default async function handler(req, res) {
   try {
-    const { query = "notebook", page = "1", limit = "10" } = req.query;
+    const { query = "", page = "1", limit = "10" } = req.query;
 
-    const maxResults = Math.min(parseInt(limit, 10) || 10, 20);
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({
+        error: "El parámetro query es obligatorio y debe tener al menos 2 caracteres."
+      });
+    }
+
     const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
+    const maxResults = Math.min(parseInt(limit, 10) || 10, 20);
+    const encodedQuery = encodeURIComponent(query.trim()).replace(/%20/g, "+");
 
-    let nisseiUrl;
+    const herimarcUrl =
+      `https://www.herimarc.com.py/get-productos?page=${pageNumber}` +
+      `&ordenar_por=0&marcas=&categorias=&categorias_top=&query_string=${encodedQuery}`;
 
-    // Por ahora usamos la categoría de notebooks de Nissei.
-    // Más adelante podemos agregar más categorías.
-    nisseiUrl = `https://nissei.com/py/informatica/notebooks/todas-las-notebooks?is_scroll=1&p=${pageNumber}`;
-
-    const response = await fetch(nisseiUrl, {
+    const response = await fetch(herimarcUrl, {
       method: "GET",
       headers: {
-        "accept": "application/json, text/javascript, */*; q=0.01",
+        "accept": "application/json, text/plain, */*",
         "accept-language": "es-ES,es;q=0.9,en;q=0.8",
+        "referer": `https://www.herimarc.com.py/buscador?buscar=&q=${encodedQuery}`,
         "x-requested-with": "XMLHttpRequest",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       }
@@ -23,82 +29,52 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(502).json({
-        error: "No se pudo consultar Nissei en este momento.",
+        error: "No se pudo consultar Herimarc en este momento.",
         status: response.status
       });
     }
 
-    const text = await response.text();
+    const data = await response.json();
 
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return res.status(500).json({
-        error: "La respuesta de Nissei no llegó en formato JSON válido.",
-        raw_preview: text.slice(0, 500)
-      });
-    }
+    const items = data?.paginacion?.data || [];
 
-    const html = data.categoryProducts || "";
-
-    const normalizedHtml = html
-      .replace(/\\\//g, "/")
-      .replace(/\\"/g, '"')
-      .replace(/\\n/g, " ")
-      .replace(/&quot;/g, '"')
-      .replace(/&#x20;/g, " ")
-      .replace(/&#x2F;/g, "/")
-      .replace(/\u00a0/g, " ");
-
-    const productBlocks = normalizedHtml
-      .split('<li class="item product product-item')
-      .slice(1)
-      .slice(0, maxResults);
-
-    const products = productBlocks.map((block) => {
-      const cleanBlock = block;
-
-      const urlMatch = cleanBlock.match(/<a class="product-item-link"\s+href="([^"]+)"/);
-      const titleMatch = cleanBlock.match(/<a class="product-item-link"[^>]*title="([^"]+)"/);
-      const imageMatch = cleanBlock.match(/<img class="product-image-photo"[^>]*src="([^"]+)"/);
-      const imageAltMatch = cleanBlock.match(/<img class="product-image-photo"[^>]*alt="([^"]+)"/);
-      const skuMatch = cleanBlock.match(/data-product-sku="([^"]+)"/);
-      const productIdMatch = cleanBlock.match(/data-product-id="([^"]+)"/);
-      const priceAmountMatch = cleanBlock.match(/data-price-amount="([^"]+)"/);
-      const visiblePriceMatch = cleanBlock.match(/<span class="price">([^<]+)<\/span>/);
-
-      const rawPrice = priceAmountMatch?.[1]
-        ? Number.parseFloat(priceAmountMatch[1])
-        : null;
-
-      const roundedPrice = rawPrice !== null
-        ? Math.round(rawPrice)
-        : null;
-
-      const name = decodeHtml(titleMatch?.[1] || imageAltMatch?.[1] || "No especificado");
+    const products = items.slice(0, maxResults).map((item) => {
+      const effectivePrice =
+        item.precio_oferta && item.precio_oferta > 0
+          ? item.precio_oferta
+          : item.getPrecio || item.precio_retail || null;
 
       return {
-        name,
-        sku: skuMatch?.[1] || "No especificado",
-        product_id: productIdMatch?.[1] || "No especificado",
-        url: urlMatch?.[1] || null,
-        image_url: imageMatch?.[1] || null,
-        cash_price: roundedPrice,
-        visible_price: visiblePriceMatch?.[1]?.replace(/\s+/g, " ").trim() || null,
+        name: item.nombre || item.producto?.nombre || "No especificado",
+        sku_id: item.id || null,
+        product_id: item.producto_id || item.producto?.id || null,
+        code: item.codigo_articulo || item.producto?.codigo || null,
+        price: effectivePrice,
+        retail_price: item.precio_retail || null,
+        offer_price: item.precio_oferta || null,
         currency: "PYG",
-        availability: "No especificado",
-        source: "Nissei Paraguay"
+        stock: item.existencia ?? null,
+        availability:
+          item.existencia > 0 ? "Disponible" : "Sin stock o no especificado",
+        unit: item.unidad_medida || null,
+        image_url: item.primera_imagen || item.primera_imagen_thumb || null,
+        url: item.url_ver || null,
+        category: item.producto?.categoria?.nombre || item.producto?.categoria_ws || null,
+        subcategory: item.producto?.subcategoria_ws || null,
+        summary: stripHtml(item.producto?.resumen || ""),
+        description: stripHtml(item.producto?.descripcion || ""),
+        source: "Herimarc Paraguay"
       };
     });
 
     return res.status(200).json({
-      source: "Nissei Paraguay",
+      source: "Herimarc Paraguay",
       query,
-      category: "notebooks",
       consultation_date: new Date().toISOString().slice(0, 10),
-      search_url: nisseiUrl,
-      current_page: data.currentPage || pageNumber,
+      search_url: herimarcUrl,
+      current_page: data?.paginacion?.current_page || pageNumber,
+      total: data?.paginacion?.total ?? products.length,
+      last_page: data?.paginacion?.last_page ?? null,
       results_count: products.length,
       results: products
     });
@@ -110,11 +86,11 @@ export default async function handler(req, res) {
   }
 }
 
-function decodeHtml(text) {
-  return String(text)
+function stripHtml(html) {
+  return String(html)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
     .replace(/&quot;/g, '"')
-    .replace(/&#x20;/g, " ")
-    .replace(/&#x2F;/g, "/")
     .replace(/&amp;/g, "&")
     .replace(/\s+/g, " ")
     .trim();
