@@ -1,25 +1,21 @@
 export default async function handler(req, res) {
   try {
-    const { query = "", limit = "10" } = req.query;
-
-    if (!query || query.trim().length < 2) {
-      return res.status(400).json({
-        error: "El parámetro query es obligatorio y debe tener al menos 2 caracteres."
-      });
-    }
+    const { query = "notebook", page = "1", limit = "10" } = req.query;
 
     const maxResults = Math.min(parseInt(limit, 10) || 10, 20);
-    const encodedQuery = encodeURIComponent(query.trim());
+    const pageNumber = Math.max(parseInt(page, 10) || 1, 1);
 
-    const tupiUrl = `https://www.tupi.com.py/buscar_paginacion_p_group.php?query=${encodedQuery}`;
+    let nisseiUrl;
 
-    const response = await fetch(tupiUrl, {
+    // Por ahora usamos la categoría de notebooks de Nissei.
+    // Más adelante podemos agregar más categorías.
+    nisseiUrl = `https://nissei.com/py/informatica/notebooks/todas-las-notebooks?is_scroll=1&p=${pageNumber}`;
+
+    const response = await fetch(nisseiUrl, {
       method: "GET",
       headers: {
         "accept": "application/json, text/javascript, */*; q=0.01",
         "accept-language": "es-ES,es;q=0.9,en;q=0.8",
-        "referer": `https://www.tupi.com.py/buscar?productos=${encodedQuery}`,
-        "origin": "https://www.tupi.com.py",
         "x-requested-with": "XMLHttpRequest",
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       }
@@ -27,7 +23,7 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(502).json({
-        error: "No se pudo consultar Tupi en este momento.",
+        error: "No se pudo consultar Nissei en este momento.",
         status: response.status
       });
     }
@@ -39,60 +35,70 @@ export default async function handler(req, res) {
       data = JSON.parse(text);
     } catch {
       return res.status(500).json({
-        error: "La respuesta de Tupi no llegó en formato JSON válido.",
+        error: "La respuesta de Nissei no llegó en formato JSON válido.",
         raw_preview: text.slice(0, 500)
       });
     }
 
-    const html = data.productos || "";
+    const html = data.categoryProducts || "";
 
     const normalizedHtml = html
       .replace(/\\\//g, "/")
       .replace(/\\"/g, '"')
-      .replace(/\\n/g, " ");
+      .replace(/\\n/g, " ")
+      .replace(/&quot;/g, '"')
+      .replace(/&#x20;/g, " ")
+      .replace(/&#x2F;/g, "/")
+      .replace(/\u00a0/g, " ");
 
     const productBlocks = normalizedHtml
-      .split('class="product_unit')
+      .split('<li class="item product product-item')
       .slice(1)
       .slice(0, maxResults);
 
     const products = productBlocks.map((block) => {
       const cleanBlock = block;
 
-      const urlMatch = cleanBlock.match(/href="(https:\/\/www\.tupi\.com\.py\/producto\/[^"]+)"/);
-      const imageMatch = cleanBlock.match(/src="(https:\/\/www\.tupi\.com\.py\/imagen_articulo\/[^"]+)"/);
-      const codeMatch = cleanBlock.match(/COD:\s*<\/i>\s*([^<\s]+)/i);
+      const urlMatch = cleanBlock.match(/<a class="product-item-link"\s+href="([^"]+)"/);
+      const titleMatch = cleanBlock.match(/<a class="product-item-link"[^>]*title="([^"]+)"/);
+      const imageMatch = cleanBlock.match(/<img class="product-image-photo"[^>]*src="([^"]+)"/);
+      const imageAltMatch = cleanBlock.match(/<img class="product-image-photo"[^>]*alt="([^"]+)"/);
+      const skuMatch = cleanBlock.match(/data-product-sku="([^"]+)"/);
+      const productIdMatch = cleanBlock.match(/data-product-id="([^"]+)"/);
+      const priceAmountMatch = cleanBlock.match(/data-price-amount="([^"]+)"/);
+      const visiblePriceMatch = cleanBlock.match(/<span class="price">([^<]+)<\/span>/);
 
-      const titleFromUrl = urlMatch?.[1]
-        ? decodeURIComponent(urlMatch[1].split("/").pop().replace(/-/g, " "))
+      const rawPrice = priceAmountMatch?.[1]
+        ? Number.parseFloat(priceAmountMatch[1])
         : null;
 
-      const priceMatches = [...cleanBlock.matchAll(/Gs\.\s*([0-9.]+)/g)].map((m) => {
-        return parseInt(m[1].replace(/\./g, ""), 10);
-      });
+      const roundedPrice = rawPrice !== null
+        ? Math.round(rawPrice)
+        : null;
 
-      const cashPrice = priceMatches.length > 0 ? priceMatches[0] : null;
-
-      const installmentTexts = [...cleanBlock.matchAll(/([0-9]+x\s*Gs\.\s*[0-9.]+)/g)].map((m) => m[1]);
+      const name = decodeHtml(titleMatch?.[1] || imageAltMatch?.[1] || "No especificado");
 
       return {
-        name: titleFromUrl || "No especificado",
-        code: codeMatch?.[1] || "No especificado",
+        name,
+        sku: skuMatch?.[1] || "No especificado",
+        product_id: productIdMatch?.[1] || "No especificado",
         url: urlMatch?.[1] || null,
         image_url: imageMatch?.[1] || null,
-        cash_price: cashPrice,
+        cash_price: roundedPrice,
+        visible_price: visiblePriceMatch?.[1]?.replace(/\s+/g, " ").trim() || null,
         currency: "PYG",
-        installment_prices: installmentTexts,
         availability: "No especificado",
-        source: "Tupi Paraguay"
+        source: "Nissei Paraguay"
       };
     });
 
     return res.status(200).json({
-      source: "Tupi Paraguay",
+      source: "Nissei Paraguay",
       query,
+      category: "notebooks",
       consultation_date: new Date().toISOString().slice(0, 10),
-      search_url: tupiUrl,
+      search_url: nisseiUrl,
+      current_page: data.currentPage || pageNumber,
       results_count: products.length,
       results: products
     });
@@ -102,4 +108,14 @@ export default async function handler(req, res) {
       detail: error.message
     });
   }
+}
+
+function decodeHtml(text) {
+  return String(text)
+    .replace(/&quot;/g, '"')
+    .replace(/&#x20;/g, " ")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
 }
