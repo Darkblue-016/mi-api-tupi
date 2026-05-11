@@ -13,13 +13,17 @@ export default async function handler(req, res) {
 
     const tupiUrl = `https://www.tupi.com.py/buscar_paginacion_p_group.php?query=${encodedQuery}`;
 
-    const response = await fetch(tupiUrl, {
-      method: "GET",
-      headers: {
-        "accept": "application/json, text/javascript, */*; q=0.01",
-        "user-agent": "Mozilla/5.0"
-      }
-    });
+const response = await fetch(tupiUrl, {
+  method: "GET",
+  headers: {
+    "accept": "application/json, text/javascript, */*; q=0.01",
+    "accept-language": "es-ES,es;q=0.9,en;q=0.8",
+    "referer": `https://www.tupi.com.py/buscar?productos=${encodedQuery}`,
+    "origin": "https://www.tupi.com.py",
+    "x-requested-with": "XMLHttpRequest",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  }
+});
 
     if (!response.ok) {
       return res.status(502).json({
